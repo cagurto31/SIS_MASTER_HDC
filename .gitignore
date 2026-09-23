@@ -1,0 +1,36 @@
+# Configuracion con credenciales - NO subir al repositorio
+.env
+.env.*
+
+# Dependencias
+/vendor/
+
+# Archivos de escritura y cache
+/writable/cache/*
+/writable/debugbar/*
+/writable/logs/*
+/writable/session/*
+/writable/uploads/*
+/writable/*.sql
+!/writable/cache/.gitkeep
+!/writable/debugbar/.gitkeep
+!/writable/logs/.gitkeep
+!/writable/session/.gitkeep
+!/writable/uploads/.gitkeep
+
+# Artefactos locales y reportes de pruebas
+/build/
+/tmp/
+/test-results/
+/deploy/
+*.xlsx
+n8n_*.json
+
+# Editores y SO
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/
+.claude/
