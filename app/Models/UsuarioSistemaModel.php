@@ -15,7 +15,7 @@ class UsuarioSistemaModel extends Model
     protected $createdField = 'CREATED_AT';
     protected $updatedField = 'UPDATED_AT';
     protected $allowedFields = [
-        'USER_ID', 'SISTEMA_ID', 'ACTIVO',
+        'USER_ID', 'SISTEMA_ID', 'ROL', 'PERMISOS', 'ACTIVO',
     ];
 
     public function accesosUsuario(int $userId): array
@@ -38,11 +38,21 @@ class UsuarioSistemaModel extends Model
                 continue;
             }
 
-            $this->insert([
+            $data = [
                 'USER_ID' => $userId,
                 'SISTEMA_ID' => (int) $acceso['SISTEMA_ID'],
                 'ACTIVO' => ! empty($acceso['ACTIVO']) ? 1 : 0,
-            ]);
+            ];
+
+            if ($this->db->fieldExists('ROL', $this->table) && array_key_exists('ROL', $acceso)) {
+                $data['ROL'] = $acceso['ROL'];
+            }
+
+            if ($this->db->fieldExists('PERMISOS', $this->table) && array_key_exists('PERMISOS', $acceso)) {
+                $data['PERMISOS'] = $acceso['PERMISOS'];
+            }
+
+            $this->insert($data);
         }
 
         $db->transComplete();

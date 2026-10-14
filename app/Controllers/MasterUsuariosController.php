@@ -3,6 +3,7 @@
 namespace App\Controllers;
 
 use App\Models\MasterUsuarioModel;
+use App\Models\SecurityProfileModel;
 use App\Models\SistemaModel;
 use App\Models\UsuarioSistemaModel;
 
@@ -10,6 +11,8 @@ class MasterUsuariosController extends BaseController
 {
     private MasterUsuarioModel $model;
     private const PER_PAGE = 20;
+
+    private const MASTER_HDC_ADMIN_USERS = ['cagurtoc', 'jsepulvedar'];
 
     public function __construct()
     {
@@ -31,6 +34,7 @@ class MasterUsuariosController extends BaseController
             'titulo' => 'Personal HDC',
             'usuario' => $this->usuario(),
             'usuarios' => $usuarios,
+            'perfiles' => (new SecurityProfileModel())->catalog(),
             'pager' => $this->model->pager,
             'q' => $q,
             'sistemaFiltro' => $sistema,
@@ -44,6 +48,8 @@ class MasterUsuariosController extends BaseController
             'titulo' => 'Nuevo usuario',
             'usuario' => $this->usuario(),
             'mu' => null,
+            'perfiles' => (new SecurityProfileModel())->catalog(),
+            'perfilesDisponibles' => (new SecurityProfileModel())->assignmentReady(),
             'sistemas' => (new SistemaModel())->activos(),
             'accesos' => [],
             'centros' => $this->centrosCosto(),
@@ -62,6 +68,8 @@ class MasterUsuariosController extends BaseController
             'titulo' => 'Editar usuario',
             'usuario' => $this->usuario(),
             'mu' => $mu,
+            'perfiles' => (new SecurityProfileModel())->catalog(),
+            'perfilesDisponibles' => (new SecurityProfileModel())->assignmentReady(),
             'sistemas' => (new SistemaModel())->activos(),
             'accesos' => (new UsuarioSistemaModel())->accesosUsuario($id),
             'centros' => $this->centrosCosto(),
@@ -71,7 +79,13 @@ class MasterUsuariosController extends BaseController
 
     public function guardar(?int $id = null)
     {
+        $current = $id ? $this->model->find($id) : null;
+        if ($id && ! $current) {
+            return redirect()->to('/master-usuarios')->with('error', 'Usuario no encontrado.');
+        }
+
         $rules = [
+            'MASTER_PERFIL_ID' => 'permit_empty|is_natural_no_zero',
             'NOMBRE' => 'required|max_length[60]',
             'APELLIDO_PATERNO' => 'required|max_length[60]',
             'APELLIDO_MATERNO' => 'required|max_length[60]',
@@ -96,7 +110,19 @@ class MasterUsuariosController extends BaseController
         }
 
         $post = $this->request->getPost();
-        $accesos = $this->normalizarAccesos($post['ACCESOS'] ?? []);
+        $profileId = null;
+        if (array_key_exists('MASTER_PERFIL_ID', $post)) {
+            $profileId = ($post['MASTER_PERFIL_ID'] ?? '') !== '' ? (int) $post['MASTER_PERFIL_ID'] : null;
+            $profileError = (new SecurityProfileModel())->validateAssignment(
+                $profileId,
+                ! empty($current['MASTER_PERFIL_ID']) ? (int) $current['MASTER_PERFIL_ID'] : null
+            );
+            if ($profileError !== null) {
+                return redirect()->back()->withInput()->with('error', $profileError);
+            }
+        }
+        $postedUser = $this->cleanSlug($post['USER'] ?? '', 20);
+        $accesos = $this->normalizarAccesos($post['ACCESOS'] ?? [], $postedUser);
 
         $data = [
             'NOMBRE' => $this->cleanText($post['NOMBRE'] ?? '', 60),
@@ -105,7 +131,7 @@ class MasterUsuariosController extends BaseController
             'CORREO' => mb_strtolower($this->cleanText($post['CORREO'] ?? '', 50)) ?: null,
             'CARGO' => $this->cleanText($post['CARGO'] ?? '', 40) ?: null,
             'TELEFONO' => ($t = trim((string) ($post['TELEFONO'] ?? ''))) !== '' ? (int) $t : null,
-            'USER' => $this->cleanSlug($post['USER'] ?? '', 20),
+            'USER' => $postedUser,
             'DEPARTAMENTO' => $this->cleanText($post['DEPARTAMENTO'] ?? '', 60) ?: null,
             'UNIDAD' => $this->cleanText($post['UNIDAD'] ?? '', 60) ?: null,
             'CENTRO_COSTO_ID' => ($centroId = trim((string) ($post['CENTRO_COSTO_ID'] ?? ''))) !== '' ? (int) $centroId : null,
@@ -114,6 +140,10 @@ class MasterUsuariosController extends BaseController
             'MFA_REQUIRED' => $this->request->getPost('MFA_REQUIRED') ? 1 : 0,
             'ACTIVO' => $this->request->getPost('ACTIVO') ? 1 : 0,
         ];
+
+        if (array_key_exists('MASTER_PERFIL_ID', $post)) {
+            $data['MASTER_PERFIL_ID'] = $profileId;
+        }
 
         if (! empty($data['SERVICIO_ID'])) {
             $data['CENTRO_COSTO_ID'] = $this->centroCostoIdPorServicio((int) $data['SERVICIO_ID']) ?? $data['CENTRO_COSTO_ID'];
@@ -133,13 +163,18 @@ class MasterUsuariosController extends BaseController
         $accessModel = new UsuarioSistemaModel();
 
         if ($id) {
-            $this->model->update($id, $data);
+            if (! $this->model->update($id, $data)) {
+                return redirect()->back()->withInput()->with('error', 'No se pudo actualizar el usuario.');
+            }
             $accessModel->reemplazarAccesos($id, $accesos);
 
             return redirect()->to('/master-usuarios')->with('success', 'Usuario actualizado.');
         }
 
         $id = (int) $this->model->insert($data, true);
+        if ($id <= 0) {
+            return redirect()->back()->withInput()->with('error', 'No se pudo crear el usuario.');
+        }
         $accessModel->reemplazarAccesos($id, $accesos);
 
         return redirect()->to('/master-usuarios')->with('success', 'Usuario creado.');
@@ -174,19 +209,55 @@ class MasterUsuariosController extends BaseController
         return redirect()->to('/master-usuarios')->with('success', 'MFA reiniciado. El usuario debera configurarlo en su proximo ingreso.');
     }
 
-    private function normalizarAccesos(array $raw): array
+    private function normalizarAccesos(array $raw, string $username): array
     {
         $accesos = [];
+        $sistemas = $this->sistemasPorId();
+        $isMasterAdmin = in_array(mb_strtolower($username), self::MASTER_HDC_ADMIN_USERS, true);
+        $hasMasterHdc = false;
 
         foreach ($raw as $sistemaId => $item) {
             if (empty($item['ACTIVO'])) {
                 continue;
             }
 
-            $accesos[] = [
-                'SISTEMA_ID' => (int) $sistemaId,
+            $sistemaId = (int) $sistemaId;
+            $slug = (string) ($sistemas[$sistemaId]['SLUG'] ?? '');
+            if ($slug === \App\Libraries\MasterSystem::slug() && ! $isMasterAdmin) {
+                continue;
+            }
+
+            if ($slug === \App\Libraries\MasterSystem::slug()) {
+                $hasMasterHdc = true;
+            }
+
+            $acceso = [
+                'SISTEMA_ID' => $sistemaId,
                 'ACTIVO' => 1,
             ];
+
+            if ($slug === \App\Libraries\MasterSystem::slug()) {
+                $acceso['ROL'] = 'administrador';
+                $acceso['PERMISOS'] = 'leer,escribir,admin';
+            }
+
+            $accesos[] = $acceso;
+        }
+
+        if ($isMasterAdmin && ! $hasMasterHdc) {
+            foreach ($sistemas as $sistemaId => $sistema) {
+                if (($sistema['SLUG'] ?? '') !== \App\Libraries\MasterSystem::slug()) {
+                    continue;
+                }
+
+                $accesos[] = [
+                    'SISTEMA_ID' => (int) $sistemaId,
+                    'ACTIVO' => 1,
+                    'ROL' => 'administrador',
+                    'PERMISOS' => 'leer,escribir,admin',
+                ];
+                break;
+            }
         }
 
         return $accesos;
@@ -202,6 +273,17 @@ class MasterUsuariosController extends BaseController
         $sistemas = (new SistemaModel())->whereIn('ID', $ids)->findAll();
 
         return implode(',', array_column($sistemas, 'SLUG')) ?: null;
+    }
+
+    private function sistemasPorId(): array
+    {
+        $sistemas = (new SistemaModel())->findAll();
+        $indexed = [];
+        foreach ($sistemas as $sistema) {
+            $indexed[(int) $sistema['ID']] = $sistema;
+        }
+
+        return $indexed;
     }
 
     private function centrosCosto(): array

@@ -111,6 +111,28 @@ foreach ($accesos as $acceso) {
 
       <hr class="my-4">
       <h5 class="mb-3">Seguridad</h5>
+      <?php $perfilSeleccionado = (int) old('MASTER_PERFIL_ID', $mu['MASTER_PERFIL_ID'] ?? 0); ?>
+      <div class="mb-3">
+        <label class="form-label" for="masterPerfil">Perfil de Master HDC</label>
+        <select name="MASTER_PERFIL_ID" id="masterPerfil" class="form-select" <?= empty($perfilesDisponibles) ? 'disabled' : '' ?>>
+          <option value="">Sin perfil asignado</option>
+          <?php if ($perfilSeleccionado && ! isset($perfiles[$perfilSeleccionado])): ?>
+            <option value="<?= $perfilSeleccionado ?>" selected disabled>Perfil no disponible: seleccione otro</option>
+          <?php endif; ?>
+          <?php foreach (($perfiles ?? []) as $perfil): ?>
+            <?php if (! $perfil['assignable'] && (int) $perfil['id'] !== $perfilSeleccionado) continue; ?>
+            <option value="<?= (int) $perfil['id'] ?>" <?= (int) $perfil['id'] === $perfilSeleccionado ? 'selected' : '' ?>>
+              <?= esc($perfil['name']) ?> — <?= esc($perfil['role_name'] ?? 'Sin rol') ?><?= ! $perfil['assignable'] ? ' (inactivo)' : '' ?>
+            </option>
+          <?php endforeach; ?>
+        </select>
+        <div class="form-text">El rol corresponde al perfil elegido. Administre los perfiles en <a href="<?= site_url('configuracion') ?>#perfiles-roles">Configuracion → Perfiles y roles</a>.</div>
+        <?php if (empty($perfilesDisponibles)): ?>
+          <div class="alert alert-warning mt-2">La asignacion de perfiles aun no esta habilitada. Contacte al administrador para completar la actualizacion.</div>
+        <?php elseif (empty($perfiles)): ?>
+          <div class="form-text">Cree un perfil en Configuracion para poder asignarlo.</div>
+        <?php endif; ?>
+      </div>
       <div class="row g-3">
         <div class="col-md-6">
           <label class="form-label">Clave unica HDC <?= $esEditar ? '<span class="text-muted small">(dejar vacia para mantener)</span>' : '' ?></label>

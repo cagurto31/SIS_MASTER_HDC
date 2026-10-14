@@ -20,6 +20,8 @@
 
 # Artefactos locales y reportes de pruebas
 /build/
+/.phpunit.result.cache
+/error_log
 /tmp/
 /test-results/
 /deploy/

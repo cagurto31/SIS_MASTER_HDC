@@ -14,6 +14,20 @@ class MasterUsuarioModel extends Model
     protected $useSoftDeletes = false;
     protected $useTimestamps  = false;
 
+    protected $beforeInsert = ['normalizarNombres'];
+    protected $beforeUpdate = ['normalizarNombres'];
+
+    protected function normalizarNombres(array $event): array
+    {
+        foreach (['NOMBRE', 'APELLIDO_PATERNO', 'APELLIDO_MATERNO'] as $campo) {
+            if (isset($event['data'][$campo])) {
+                $event['data'][$campo] = mb_strtoupper($event['data'][$campo], 'UTF-8');
+            }
+        }
+
+        return $event;
+    }
+
     protected $allowedFields = [
         'RUT', 'DV', 'NOMBRE', 'APELLIDO_PATERNO', 'APELLIDO_MATERNO',
         'CORREO', 'CARGO', 'TELEFONO', 'PASSWORD', 'USER',
@@ -22,6 +36,7 @@ class MasterUsuarioModel extends Model
         'LAST_LOGIN_AT', 'PASSWORD_CHANGED_AT',
         'FAILED_LOGIN_ATTEMPTS', 'LOCKED_UNTIL',
         'CENTRO_COSTO_ID', 'SERVICIO_ID',
+        'MASTER_PERFIL_ID',
     ];
 
     public function getPaginado(int $perPage, string $q = '', string $sistema = ''): array

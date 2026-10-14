@@ -49,6 +49,16 @@ class PasswordResetModel extends Model
         $this->update($id, ['used' => 1]);
     }
 
+    public function marcarActivosUsadosPorEmail(string $email): void
+    {
+        $this->ensureTable();
+
+        $this->db->table($this->table)
+            ->where('email', $email)
+            ->where('used', 0)
+            ->update(['used' => 1]);
+    }
+
     private function ensureTable(): void
     {
         if ($this->db->tableExists($this->table)) {

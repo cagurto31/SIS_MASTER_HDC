@@ -8,7 +8,9 @@ use App\Models\PasswordResetModel;
 
 class AuthController extends BaseController
 {
-    private const SYSTEM_SLUG = 'master_hdc';
+
+    private const MASTER_ADMIN_USERS = ['cagurtoc', 'jsepulvedar'];
+    private string $accessDiagnostic = 'L02-R2';
     private const LOGIN_ERROR = 'No fue posible iniciar sesion. Verifica tus credenciales o espera unos minutos.';
     private const MAX_LOGIN_ATTEMPTS = 3;
     private const LOCKOUT_SECONDS = 180;
@@ -31,11 +33,16 @@ class AuthController extends BaseController
         $usuario = $this->cleanIdentifier((string) $this->request->getPost('usuario'));
         $password = (string) $this->request->getPost('password');
 
-        if (! $this->validate([
+        // Validate the same POST values used for authentication. Hosting settings
+        // can exclude POST from $_REQUEST or allow other input to override it.
+        if (! $this->validateData(['usuario' => $usuario, 'password' => $password], [
             'usuario' => 'required|max_length[20]|regex_match[/^[0-9A-Za-zÁÉÍÓÚÜÑáéíóúüñ@._+\\-]+$/u]',
             'password' => 'required|min_length[8]|max_length[10]',
         ])) {
-            return redirect()->to(site_url('login'))->withInput()->with('error', self::LOGIN_ERROR);
+            return redirect()->to(site_url('login'))->withInput()->with(
+                'error',
+                'Revisa el formato del usuario y la contrasena (entre 8 y 10 caracteres). [L01]'
+            );
         }
 
         $model = new MasterUsuarioModel();
@@ -57,6 +64,13 @@ class AuthController extends BaseController
 
             return redirect()->to(site_url('login'))->withInput()
                 ->with('error', $this->failedAttemptMessage(self::MAX_LOGIN_ATTEMPTS));
+        }
+
+        if (! $this->isAuthorizedForMasterHdc($user)) {
+            return redirect()->to(site_url('login'))->withInput()->with(
+                'error',
+                'Credenciales correctas, pero no fue posible autorizar el acceso a Master HDC. Contacta al administrador. [' . $this->accessDiagnostic . ']'
+            );
         }
 
         $model->update((int) $user['ID'], [
@@ -206,17 +220,28 @@ class AuthController extends BaseController
                 ->with('success', 'Si existe una cuenta activa, enviaremos instrucciones de recuperacion al correo indicado.');
         }
 
-        $token = (new PasswordResetModel())->crearToken($correo, 3600);
+        $resetModel = new PasswordResetModel();
+        $token = $resetModel->crearToken($correo, 3600);
         $enlace = site_url('reset-password/' . $token);
         $enviado = $this->sendPasswordResetEmail($correo, $user, $enlace);
 
-        log_message('info', 'Password reset Master HDC para {c}: {e}', ['c' => $correo, 'e' => $enlace]);
+        if (! $enviado) {
+            if (ENVIRONMENT === 'development') {
+                log_message('info', 'Password reset Master HDC DEV para {c}: {e}', ['c' => $correo, 'e' => $enlace]);
 
-        $msg = 'Te enviamos un enlace para restablecer tu contraseña. Revisa tu correo (válido por 1 hora).';
-        if (! $enviado && ENVIRONMENT === 'development') {
-            $msg .= ' [DEV] Enlace: ' . $enlace;
+                return redirect()->to(site_url('login'))
+                    ->with('success', 'No se pudo enviar el correo. [DEV] Enlace: ' . $enlace);
+            }
+
+            $resetModel->marcarActivosUsadosPorEmail($correo);
+
+            return redirect()->to(site_url('forgot-password'))->withInput()
+                ->with('error', 'No fue posible enviar el correo de recuperacion. Revisa la configuracion SMTP o intenta nuevamente.');
         }
 
+        log_message('info', 'Password reset Master HDC enviado a {c}', ['c' => $correo]);
+
+        $msg = 'Te enviamos un enlace para restablecer tu contraseña. Revisa tu correo (válido por 1 hora).';
         return redirect()->to(site_url('login'))->with('success', $msg);
     }
 
@@ -424,7 +449,7 @@ class AuthController extends BaseController
                 $row = $db->table('sistema_mfa_settings m')
                     ->select('m.MFA_ENABLED AS enabled, m.EMAIL_ENABLED AS email_enabled, m.AUTHENTICATOR_ENABLED AS authenticator_enabled, m.ISSUER AS issuer')
                     ->join('sistemas_hdc s', 's.ID = m.SISTEMA_ID')
-                    ->where('s.SLUG', self::SYSTEM_SLUG)
+                    ->where('s.SLUG', \App\Libraries\MasterSystem::slug())
                     ->get()
                     ->getRowArray();
 
@@ -481,13 +506,57 @@ class AuthController extends BaseController
         }
 
         $user = (new MasterUsuarioModel())->find($userId);
-        if (! $user || empty($user['ACTIVO'])) {
+        if (! $user || empty($user['ACTIVO']) || ! $this->isAuthorizedForMasterHdc($user)) {
             $this->clearMfaChallenge();
 
             return null;
         }
 
         return $user;
+    }
+
+    private function isAuthorizedForMasterHdc(array $user): bool
+    {
+        $username = mb_strtolower(trim((string) ($user['USER'] ?? '')));
+        if (! in_array($username, self::MASTER_ADMIN_USERS, true)) {
+            $this->accessDiagnostic = 'L02-R2-CUENTA';
+            log_message('error', 'Master HDC acceso denegado: cuenta fuera de administradores permitidos. User ID: {id}', [
+                'id' => (int) ($user['ID'] ?? 0),
+            ]);
+            return false;
+        }
+
+        $context = ['revision' => 'L02-R2', 'user_id' => (int) ($user['ID'] ?? 0), 'archivo' => __FILE__];
+        try {
+            $db = db_connect('master_usuarios');
+            $context['database'] = $db->getDatabase();
+            $context['slug'] = \App\Libraries\MasterSystem::slug();
+            $row = $db->table('usuario_sistemas us')
+                ->select('us.ID')
+                ->join('sistemas_hdc s', 's.ID = us.SISTEMA_ID')
+                ->where('us.USER_ID', (int) ($user['ID'] ?? 0))
+                ->where('us.ACTIVO', 1)
+                ->where('s.ACTIVO', 1)
+                ->where('s.SLUG', $context['slug'])
+                ->get()
+                ->getRowArray();
+
+            if ($row === null) {
+                $this->accessDiagnostic = 'L02-R2-ASIGNACION';
+                log_message('error', 'Master HDC L02-R2 sin asignacion activa: {context}', [
+                    'context' => json_encode($context, JSON_UNESCAPED_SLASHES),
+                ]);
+            }
+
+            return $row !== null;
+        } catch (\Throwable $e) {
+            $this->accessDiagnostic = 'L02-R2-CONSULTA';
+            log_message('error', 'Master HDC L02-R2 fallo de consulta: {context}; error: {m}', [
+                'context' => json_encode($context, JSON_UNESCAPED_SLASHES), 'm' => $e->getMessage(),
+            ]);
+
+            return false;
+        }
     }
 
     private function clearMfaChallenge(): void
@@ -512,13 +581,25 @@ class AuthController extends BaseController
                 . '<p style="font-size:24px;font-weight:700;letter-spacing:4px">' . esc($code) . '</p>'
                 . '<p>El codigo vence en 10 minutos. Si no intentaste iniciar sesion, informa este evento.</p>';
 
+            $subject = 'Codigo MFA - Master HDC';
             $email = service('email');
             $email->setTo($correo);
-            $email->setSubject('Codigo MFA - Master HDC');
+            $email->setSubject($subject);
             $email->setMailType('html');
             $email->setMessage($mensaje);
 
-            return $email->send(false);
+            $sent = $email->send(false);
+            if (! $sent) {
+                $this->logEmailConfigSnapshot($email, 'MFA');
+                log_message('error', 'No se pudo enviar correo MFA a {correo}. Debug: {debug}', [
+                    'correo' => $correo,
+                    'debug' => trim(strip_tags($email->printDebugger(['headers', 'subject']))),
+                ]);
+
+                $sent = $this->sendWithPhpMailFallback($correo, $subject, $mensaje, 'MFA');
+            }
+
+            return $sent;
         } catch (\Throwable $e) {
             log_message('error', 'Error enviando correo MFA: {msg}', ['msg' => $e->getMessage()]);
 
@@ -530,6 +611,7 @@ class AuthController extends BaseController
     {
         try {
             $nombre = $this->nombreUsuario($user);
+            $subject = 'Recuperacion de contrasena - Master HDC';
             $mensaje = '<p>Hola ' . esc($nombre) . ',</p>'
                 . '<p>Recibimos una solicitud para restablecer tu contraseña en Master HDC.</p>'
                 . '<p><a href="' . esc($enlace) . '" style="background:#1D6FE8;color:#fff;padding:10px 18px;border-radius:8px;text-decoration:none;display:inline-block;">Crear nueva contraseña</a></p>'
@@ -542,11 +624,82 @@ class AuthController extends BaseController
             $email->setMailType('html');
             $email->setMessage($mensaje);
 
-            return $email->send(false);
+            $sent = $email->send(false);
+            if (! $sent) {
+                $this->logEmailConfigSnapshot($email, 'recuperacion');
+                log_message('error', 'No se pudo enviar correo de recuperacion a {correo}. Debug: {debug}', [
+                    'correo' => $correo,
+                    'debug' => trim(strip_tags($email->printDebugger(['headers', 'subject']))),
+                ]);
+
+                $sent = $this->sendWithPhpMailFallback($correo, $subject, $mensaje, 'recuperacion');
+            }
+
+            return $sent;
         } catch (\Throwable $e) {
             log_message('error', 'Error enviando correo de recuperación Master HDC: {msg}', ['msg' => $e->getMessage()]);
 
             return false;
         }
+    }
+
+    private function logEmailConfigSnapshot(object $email, string $contexto): void
+    {
+        $password = (string) ($email->SMTPPass ?? '');
+
+        log_message('error', 'Config correo {ctx}: protocol={protocol}, host={host}, port={port}, crypto={crypto}, user={user}, from={from}, pass_len={passLen}', [
+            'ctx' => $contexto,
+            'protocol' => (string) ($email->protocol ?? ''),
+            'host' => (string) ($email->SMTPHost ?? ''),
+            'port' => (string) ($email->SMTPPort ?? ''),
+            'crypto' => (string) ($email->SMTPCrypto ?? ''),
+            'user' => (string) ($email->SMTPUser ?? ''),
+            'from' => (string) ($email->fromEmail ?? ''),
+            'passLen' => strlen($password),
+        ]);
+    }
+
+    private function sendWithPhpMailFallback(string $correo, string $subject, string $mensaje, string $contexto): bool
+    {
+        try {
+            $baseConfig = get_object_vars(config('Email'));
+            $fallbackConfig = array_merge($baseConfig, [
+                'protocol' => 'mail',
+                'SMTPHost' => '',
+                'SMTPUser' => '',
+                'SMTPPass' => '',
+                'SMTPPort' => 25,
+                'SMTPCrypto' => '',
+            ]);
+
+            $email = service('email', $fallbackConfig, false);
+            $email->setTo($correo);
+            $email->setSubject($subject);
+            $email->setMailType('html');
+            $email->setMessage($mensaje);
+
+            $sent = $email->send(false);
+            if ($sent) {
+                log_message('info', 'Correo {ctx} enviado a {correo} usando fallback mail().', [
+                    'ctx' => $contexto,
+                    'correo' => $correo,
+                ]);
+
+                return true;
+            }
+
+            log_message('error', 'Fallback mail() fallo para correo {ctx} a {correo}. Debug: {debug}', [
+                'ctx' => $contexto,
+                'correo' => $correo,
+                'debug' => trim(strip_tags($email->printDebugger(['headers', 'subject']))),
+            ]);
+        } catch (\Throwable $e) {
+            log_message('error', 'Fallback mail() lanzo error para correo {ctx}: {msg}', [
+                'ctx' => $contexto,
+                'msg' => $e->getMessage(),
+            ]);
+        }
+
+        return false;
     }
 }

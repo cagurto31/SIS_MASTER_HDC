@@ -48,4 +48,12 @@ $routes->group('', ['filter' => 'auth'], static function (RouteCollection $route
     $routes->post('configuracion/guardar/(:num)', 'ConfigurationController::save/$1');
     $routes->post('configuracion/seleccionar/(:num)', 'ConfigurationController::select/$1');
     $routes->post('configuracion/mfa', 'ConfigurationController::saveMfa');
+    $routes->post('configuracion/roles/guardar', 'ConfigurationController::saveRole');
+    $routes->post('configuracion/roles/guardar/(:num)', 'ConfigurationController::saveRole/$1');
+    $routes->get('configuracion/roles/toggle/(:num)', 'ConfigurationController::toggleRole/$1');
+    $routes->post('configuracion/roles/eliminar/(:num)', 'ConfigurationController::deleteRole/$1');
+    $routes->post('configuracion/perfiles/guardar', 'ConfigurationController::saveProfile');
+    $routes->post('configuracion/perfiles/guardar/(:num)', 'ConfigurationController::saveProfile/$1');
+    $routes->get('configuracion/perfiles/toggle/(:num)', 'ConfigurationController::toggleProfile/$1');
+    $routes->post('configuracion/perfiles/eliminar/(:num)', 'ConfigurationController::deleteProfile/$1');
 });
